@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>終夜参拝（よもうで）- Night Shrine Horror</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Times New Roman', serif;
+            user-select: none;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        /* クロスヘア */
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 8px;
+            height: 8px;
+            background-color: rgba(255, 255, 255, 0.4);
+            border: 1px solid rgba(0, 0, 0, 0.6);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            transition: all 0.2s ease;
+        }
+        #crosshair.active {
+            background-color: rgba(255, 215, 0, 0.9);
+            transform: translate(-50%, -50%) scale(1.8);
+        }
+        /* ノイズ・ビネット */
+        .vignette {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            box-shadow: 0 0 150px rgba(0,0,0,0.85) inset;
+            pointer-events: none;
+        }
+        .horror-flash {
+            animation: redFlash 0.5s ease-in-out infinite alternate;
+        }
+        @keyframes redFlash {
+            0% { box-shadow: 0 0 100px rgba(150, 0, 0, 0.4) inset; }
+            100% { box-shadow: 0 0 200px rgba(255, 0, 0, 0.8) inset; }
+        }
+        /* テキスト書体 */
+        .japanese-title {
+            font-family: 'Hiragino Mincho ProN', 'Yu Mincho', serif;
+            writing-mode: vertical-rl;
+            text-orientation: upright;
+        }
+    </style>
+</head>
+<body class="relative w-full h-full text-white overflow-hidden select-none">
+
+    <!-- WebGL Canvas Container -->
+    <div id="canvas-container"></div>
+
+    <!-- UI Overlays -->
+    <div id="vignette-overlay" class="vignette"></div>
+    <div id="crosshair"></div>
+
+    <!-- 画面ガイドメッセージ -->
+    <div id="interaction-prompt" class="absolute bottom-28 left-1/2 -translate-x-1/2 bg-black/80 border border-amber-900/50 text-amber-100 px-6 py-2 rounded-full text-sm sm:text-base tracking-widest hidden transition-all duration-300 shadow-lg">
+        [E] 賽銭を入れる
+    </div>
+
+    <!-- 操作案内/ステータス -->
+    <div id="ui-overlay" class="absolute top-4 left-4 pointer-events-none text-xs sm:text-sm text-gray-300 bg-black/60 p-4 rounded border border-gray-800 backdrop-blur-sm max-w-xs">
+        <h1 class="text-amber-500 font-bold mb-2 tracking-widest text-base">【参拝手順】</h1>
+        <p id="objective-text" class="text-amber-200/90 mb-2">本殿へ進み、賽銭を収めて祈りを捧げなさい。</p>
+        <div class="space-y-1 text-gray-400 text-xs">
+            <p>移動: <span class="text-white">WASD / 矢印</span></p>
+            <p>視点移動: <span class="text-white">マウス移動</span></p>
+            <p>ダッシュ: <span class="text-white">Shift</span></p>
+            <p>懐中電灯: <span class="text-white">Fキー</span></p>
+            <p>調べる / 賽銭: <span class="text-white">Eキー / 左クリック</span></p>
+        </div>
+    </div>
+
+    <!-- 開始オーバーレイ -->
+    <div id="start-screen" class="absolute inset-0 bg-black/95 flex flex-col items-center justify-center z-50 transition-opacity duration-1000">
+        <div class="flex items-center space-x-6 mb-8">
+            <div class="japanese-title text-4xl sm:text-6xl text-red-700 tracking-widest font-extrabold border-r-2 border-red-900 pr-4">
+                終夜参拝
+            </div>
+            <div class="text-gray-400 text-sm sm:text-base max-w-xs leading-relaxed">
+                丑三つ時、静まり返った境内の奥。<br>
+                灯籠の明かりを頼りに、あなたは賽銭箱の前へと進む。<br><br>
+                <span class="text-red-500">※ 音声が出ます。ヘッドホン推奨。</span>
+            </div>
+        </div>
+        <button id="start-btn" class="px-8 py-3 bg-red-950 hover:bg-red-800 text-amber-200 border border-red-700 rounded-lg text-lg tracking-widest transition-all duration-300 hover:scale-105 shadow-red-900/50 shadow-lg cursor-pointer">
+            境内に入る（画面クリック）
+        </button>
+    </div>
+
+    <!-- ゲームオーバー / クリア画面 -->
+    <div id="game-over-screen" class="absolute inset-0 bg-black/95 flex flex-col items-center justify-center z-50 hidden opacity-0 transition-opacity duration-1000">
+        <h2 id="game-over-title" class="text-4xl sm:text-6xl text-red-600 font-bold mb-4 tracking-widest">捕縛</h2>
+        <p id="game-over-desc" class="text-gray-300 text-base mb-8 max-w-md text-center">神域を穢した者に、逃げ場などない。</p>
+        <button onclick="location.reload()" class="px-6 py-2 bg-gray-900 border border-gray-700 hover:border-red-600 text-gray-200 rounded transition duration-300">
+            もう一度参拝する
+        </button>
+    </div>
+
+    <!-- ゲームシナリオ・演出ロジック -->
+    <script>
+        // --- Web Audio API サウンドジェネレーター ---
+        class SoundEngine {
+            constructor() {
+                this.ctx = null;
+                this.isMuted = false;
+            }
+
+            init() {
+                if (!this.ctx) {
+                    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+            }
+
+            // 足音（ざっざっ…）
+            playFootstep(isRun = false) {
+                if (!this.ctx) return;
+                const now = this.ctx.currentTime;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                const filter = this.ctx.createBiquadFilter();
+
+                // ノイズ生成
+                const bufferSize = this.ctx.sampleRate * 0.08;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+
+                const noise = this.ctx.createBufferSource();
+                noise.buffer = buffer;
+
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(isRun ? 400 : 250, now);
+
+                gain.gain.setValueAtTime(isRun ? 0.3 : 0.15, now);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + (isRun ? 0.06 : 0.08));
+
+                noise.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.ctx.destination);
+
+                noise.start(now);
+            }
+
+            // 賽銭（チャリン！）
+            playCoinSound() {
+                if (!this.ctx) return;
+                const now = this.ctx.currentTime;
+                
+                // 2つの高音金属音でリッチな coin sound を生成
+                [1800, 2600, 3200].forEach((freq, idx) => {
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(freq, now + idx * 0.02);
+
+                    gain.gain.setValueAtTime(0.4, now + idx * 0.02);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5 + idx * 0.02);
+
+                    osc.connect(gain);
+                    gain.connect(this.ctx.destination);
+
+                    osc.start(now + idx * 0.02);
+                    osc.stop(now + 0.6);
+                });
+            }
+
+            // ホラー変調ドローン・不気味な背景音
+            startHorrorAmbience() {
+                if (!this.ctx) return;
+                const now = this.ctx.currentTime;
+
+                // 重低音
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(55, now); // Low A
+
+                const filter = this.ctx.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(120, now);
+
+                gain.gain.setValueAtTime(0.01, now);
+                gain.gain.linearRampToValueAtTime(0.3, now + 3);
+
+                osc.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start();
+
+                // 不協和音の高音
+                const highOsc = this.ctx.createOscillator();
+                const highGain = this.ctx.createGain();
+                highOsc.type = 'sine';
+                highOsc.frequency.setValueAtTime(1420, now);
+
+                highGain.gain.setValueAtTime(0.001, now);
+                highGain.gain.linearRampToValueAtTime(0.08, now + 4);
+
+                highOsc.connect(highGain);
+                highGain.connect(this.ctx.destination);
+                highOsc.start();
+            }
+
+            // 狂気の鈴の音（Jホラー演出）
+            playShrineBellJumpscare() {
+                if (!this.ctx) return;
+                const now = this.ctx.currentTime;
+
+                for(let i = 0; i < 15; i++) {
+                    const timeOffset = now + i * 0.08 + (Math.random() * 0.03);
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(1200 + Math.random() * 800, timeOffset);
+
+                    gain.gain.setValueAtTime(0.5, timeOffset);
+                    gain.gain.exponentialRampToValueAtTime(0.001, timeOffset + 0.2);
+
+                    osc.connect(gain);
+                    gain.connect(this.ctx.destination);
+
+                    osc.start(timeOffset);
+                    osc.stop(timeOffset + 0.25);
+                }
+            }
+        }
+
+        const audio = new SoundEngine();
+
+        // --- 3Dゲーム本体 (Three.js) ---
+        let scene, camera, renderer;
+        let lanterns = [];
+        let flashLight;
+        let offertoryBox;
+        let shadowMonster;
+        let toriiGateExit;
+        
+        // 状態変数
+        let isStarted = false;
+        let isCoinInserted = false;
+        let isGameOver = false;
+        let isEscaped = false;
+        let monsterSpeed = 0.045;
+        
+        // 移動コントロール
+        const keys = { w: false, a: false, s: false, d: false, shift: false };
+        let moveVector = new THREE.Vector3();
+        let yaw = 0, pitch = 0;
+        const mouseSensitivity = 0.0022;
+
+        // 初期化
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+
+            // シーン & フォグ (濃い夜の霧)
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x020205);
+            scene.fog = new THREE.FogExp2(0x020205, 0.045);
+
+            // カメラ (目線1.65m)
+            camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 1.65, 30); // 鳥居の手前からスタート
+
+            // レンダラー
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            // 照度設定（微弱な月明かり）
+            const ambientLight = new THREE.AmbientLight(0x0a0d1a, 0.3);
+            scene.add(ambientLight);
+
+            // 月光（ディレクショナルライト）
+            const moonLight = new THREE.DirectionalLight(0x334466, 0.4);
+            moonLight.position.set(-20, 40, -10);
+            moonLight.castShadow = true;
+            moonLight.shadow.mapSize.width = 2048;
+            moonLight.shadow.mapSize.height = 2048;
+            scene.add(moonLight);
+
+            // プレイヤー持参の懐中電灯
+            flashLight = new THREE.SpotLight(0xfff5ea, 2.5, 25, Math.PI / 6, 0.4, 1);
+            flashLight.position.copy(camera.position);
+            flashLight.castShadow = true;
+            scene.add(flashLight);
+            scene.add(flashLight.target);
+
+            // 神社ステージのビルド
+            buildShrineEnvironment();
+
+            // イベントリスナー
+            setupControls();
+
+            // アニメーションループ
+            clock = new THREE.Clock();
+            animate();
+        }
+
+        let clock;
+
+        // 神社のオブジェクトアセンブリ
+        function buildShrineEnvironment() {
+            // 地面：石畳と泥
+            const groundGeo = new THREE.PlaneGeometry(80, 100);
+            const groundMat = new THREE.MeshStandardMaterial({
+                color: 0x111311,
+                roughness: 0.95,
+                metalness: 0.05
+            });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // 参道（中央の石畳）
+            const pathGeo = new THREE.PlaneGeometry(4, 70);
+            const pathMat = new THREE.MeshStandardMaterial({
+                color: 0x222225,
+                roughness: 0.8
+            });
+            const path = new THREE.Mesh(pathGeo, pathMat);
+            path.rotation.x = -Math.PI / 2;
+            path.position.set(0, 0.01, -5);
+            path.receiveShadow = true;
+            scene.add(path);
+
+            // 鳥居 (赤黒い木製) - スタート地点 & 脱出地点
+            toriiGateExit = createToriiGate(0, 0, 25);
+
+            // 鳥居 (拝殿前)
+            createToriiGate(0, 0, -15);
+
+            // 石灯籠の列（参道脇に左右配置）
+            const lanternPositions = [
+                [-3.5, 20], [3.5, 20],
+                [-3.5, 10], [3.5, 10],
+                [-3.5, 0],  [3.5, 0],
+                [-3.5, -10],[3.5, -10],
+                [-3.5, -20],[3.5, -20]
+            ];
+            lanternPositions.forEach(pos => {
+                createStoneLantern(pos[0], pos[1]);
+            });
+
+            // 拝殿（本殿構造）
+            createShrineBuilding(0, 0, -32);
+
+            // 賽銭箱
+            createOffertoryBox(0, 0, -26);
+
+            // 周囲の木々・竹林（不気味な背景）
+            createForest();
+        }
+
+        // 鳥居作成
+        function createToriiGate(x, y, z) {
+            const group = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({ color: 0x5a0f0d, roughness: 0.6 }); // 朱色（暗め）
+
+            // 柱
+            const pillarGeo = new THREE.CylinderGeometry(0.35, 0.4, 7, 12);
+            const p1 = new THREE.Mesh(pillarGeo, mat);
+            p1.position.set(-2.5, 3.5, 0);
+            p1.castShadow = true;
+            const p2 = new THREE.Mesh(pillarGeo, mat);
+            p2.position.set(2.5, 3.5, 0);
+            p2.castShadow = true;
+
+            // 笠木（一番上の横木）
+            const topGeo = new THREE.BoxGeometry(7, 0.5, 0.6);
+            const top = new THREE.Mesh(topGeo, mat);
+            top.position.set(0, 6.8, 0);
+            top.castShadow = true;
+
+            // 貫（二番目の横木）
+            const midGeo = new THREE.BoxGeometry(6, 0.35, 0.4);
+            const mid = new THREE.Mesh(midGeo, mat);
+            mid.position.set(0, 5.5, 0);
+            mid.castShadow = true;
+
+            group.add(p1, p2, top, mid);
+            group.position.set(x, y, z);
+            scene.add(group);
+            return group;
+        }
+
+        // 灯籠作成（火袋のライティング重視）
+        function createStoneLantern(x, z) {
+            const group = new THREE.Group();
+            const stoneMat = new THREE.MeshStandardMaterial({ color: 0x2a2c2a, roughness: 0.9 });
+
+            // 土台・柱・笠
+            const base = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.4, 0.8), stoneMat);
+            base.position.y = 0.2;
+            base.castShadow = true;
+
+            const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.25, 1.5, 8), stoneMat);
+            pillar.position.y = 1.15;
+            pillar.castShadow = true;
+
+            // 火袋 (中身が光る)
+            const boxMat = new THREE.MeshStandardMaterial({ 
+                color: 0x111111, 
+                emissive: 0xff6600, 
+                emissiveIntensity: 0.6 
+            });
+            const frame = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.6, 0.7), boxMat);
+            frame.position.y = 2.0;
+
+            const roof = new THREE.Mesh(new THREE.ConeGeometry(0.7, 0.5, 4), stoneMat);
+            roof.position.y = 2.5;
+            roof.rotation.y = Math.PI / 4;
+            roof.castShadow = true;
+
+            // ポイントライト（灯籠の温かい揺らぎ光）
+            const pLight = new THREE.PointLight(0xff7722, 1.8, 10, 1.8);
+            pLight.position.set(0, 2.0, 0);
+            pLight.castShadow = true;
+
+            group.add(base, pillar, frame, roof, pLight);
+            group.position.set(x, 0, z);
+            scene.add(group);
+
+            // 動的揺らぎ用参照を保持
+            lanterns.push({
+                light: pLight,
+                frameMesh: frame,
+                baseIntensity: 1.8,
+                phaseOffset: Math.random() * 100
+            });
+        }
+
+        // 拝殿作成
+        function createShrineBuilding(x, y, z) {
+            const group = new THREE.Group();
+            const woodMat = new THREE.MeshStandardMaterial({ color: 0x23140c, roughness: 0.8 });
+            const roofMat = new THREE.MeshStandardMaterial({ color: 0x111a16, roughness: 0.5 });
+            const redMat = new THREE.MeshStandardMaterial({ color: 0x4a0d0d, roughness: 0.7 });
+
+            // 本体構造
+            const mainBody = new THREE.Mesh(new THREE.BoxGeometry(12, 5, 8), woodMat);
+            mainBody.position.y = 2.5;
+            mainBody.castShadow = true;
+            mainBody.receiveShadow = true;
+
+            // 大屋根
+            const roofGeo = new THREE.ConeGeometry(10, 4, 4);
+            const roof = new THREE.Mesh(roofGeo, roofMat);
+            roof.position.y = 6.5;
+            roof.rotation.y = Math.PI / 4;
+            roof.scale.set(1.1, 0.8, 1.4);
+            roof.castShadow = true;
+
+            // 階段・向拝
+            const stairs = new THREE.Mesh(new THREE.BoxGeometry(6, 1, 3), redMat);
+            stairs.position.set(0, 0.5, 4.5);
+            stairs.receiveShadow = true;
+
+            group.add(mainBody, roof, stairs);
+            group.position.set(x, y, z);
+            scene.add(group);
+        }
+
+        // 賽銭箱作成
+        function createOffertoryBox(x, y, z) {
+            const boxGeo = new THREE.BoxGeometry(2.2, 1.1, 1.2);
+            const boxMat = new THREE.MeshStandardMaterial({ color: 0x3d1e08, roughness: 0.6 });
+            offertoryBox = new THREE.Mesh(boxGeo, boxMat);
+            offertoryBox.position.set(x, 0.8, z);
+            offertoryBox.castShadow = true;
+            offertoryBox.receiveShadow = true;
+            scene.add(offertoryBox);
+        }
+
+        // 木々のランダム生成
+        function createForest() {
+            const treeGeo = new THREE.ConeGeometry(2, 8, 5);
+            const trunkGeo = new THREE.CylinderGeometry(0.3, 0.4, 3, 6);
+            const leavesMat = new THREE.MeshStandardMaterial({ color: 0x071209, roughness: 0.9 });
+            const trunkMat = new THREE.MeshStandardMaterial({ color: 0x150d0a });
+
+            for (let i = 0; i < 70; i++) {
+                const group = new THREE.Group();
+                const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+                trunk.position.y = 1.5;
+                const leaves = new THREE.Mesh(treeGeo, leavesMat);
+                leaves.position.y = 5.5;
+
+                group.add(trunk, leaves);
+                
+                // 参道脇を避けて配置
+                let rx = (Math.random() - 0.5) * 70;
+                if (Math.abs(rx) < 6) rx += (rx > 0 ? 8 : -8);
+                let rz = (Math.random() - 0.5) * 90;
+
+                group.position.set(rx, 0, rz);
+                scene.add(group);
+            }
+        }
+
+        // 影の怪物（異形の存在）を召喚
+        function spawnShadowMonster() {
+            const group = new THREE.Group();
+            
+            // 不気味なヒューマノイド影
+            const bodyMat = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true });
+            const coreGeo = new THREE.CylinderGeometry(0.4, 0.1, 2.8, 8);
+            const core = new THREE.Mesh(coreGeo, bodyMat);
+            core.position.y = 1.4;
+
+            // 巨大な頭部
+            const headGeo = new THREE.SphereGeometry(0.5, 8, 8);
+            const head = new THREE.Mesh(headGeo, bodyMat);
+            head.position.y = 3.0;
+
+            // 不気味に光る赤い眼球
+            const eyeGeo = new THREE.SphereGeometry(0.08, 6, 6);
+            const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const eye1 = new THREE.Mesh(eyeGeo, eyeMat);
+            eye1.position.set(-0.15, 3.1, 0.4);
+            const eye2 = new THREE.Mesh(eyeGeo, eyeMat);
+            eye2.position.set(0.15, 3.1, 0.4);
+
+            group.add(core, head, eye1, eye2);
+            // 拝殿の中から現れる
+            group.position.set(0, 0, -31);
+            scene.add(group);
+
+            shadowMonster = group;
+        }
+
+        // --- 操作・イベント系処理 ---
+        function setupControls() {
+            // マウス移動（視点回転）
+            document.addEventListener('mousemove', (e) => {
+                if (document.pointerLockElement === document.body && !isGameOver && !isEscaped) {
+                    yaw -= e.movementX * mouseSensitivity;
+                    pitch -= e.movementY * mouseSensitivity;
+                    pitch = Math.max(-Math.PI / 2.5, Math.min(Math.PI / 2.5, pitch));
+                }
+            });
+
+            // キーボード操作
+            document.addEventListener('keydown', (e) => {
+                switch(e.code) {
+                    case 'KeyW': case 'ArrowUp': keys.w = true; break;
+                    case 'KeyS': case 'ArrowDown': keys.s = true; break;
+                    case 'KeyA': case 'ArrowLeft': keys.a = true; break;
+                    case 'KeyD': case 'ArrowRight': keys.d = true; break;
+                    case 'ShiftLeft': case 'ShiftRight': keys.shift = true; break;
+                    case 'KeyF':
+                        flashLight.visible = !flashLight.visible;
+                        break;
+                    case 'KeyE':
+                        tryInsertCoin();
+                        break;
+                }
+            });
+
+            document.addEventListener('keyup', (e) => {
+                switch(e.code) {
+                    case 'KeyW': case 'ArrowUp': keys.w = false; break;
+                    case 'KeyS': case 'ArrowDown': keys.s = false; break;
+                    case 'KeyA': case 'ArrowLeft': keys.a = false; break;
+                    case 'KeyD': case 'ArrowRight': keys.d = false; break;
+                    case 'ShiftLeft': case 'ShiftRight': keys.shift = false; break;
+                }
+            });
+
+            // スタートボタン
+            document.getElementById('start-btn').addEventListener('click', () => {
+                document.body.requestPointerLock();
+                document.getElementById('start-screen').style.opacity = '0';
+                setTimeout(() => {
+                    document.getElementById('start-screen').classList.add('hidden');
+                }, 1000);
+                audio.init();
+                isStarted = true;
+            });
+
+            // クリックでも賽銭判定
+            document.addEventListener('click', () => {
+                if (document.pointerLockElement !== document.body && isStarted && !isGameOver && !isEscaped) {
+                    document.body.requestPointerLock();
+                } else if (isStarted) {
+                    tryInsertCoin();
+                }
+            });
+        }
+
+        // 賽銭トリガー発動ロジック
+        function tryInsertCoin() {
+            if (isCoinInserted || !isStarted || isGameOver) return;
+
+            const dist = camera.position.distanceTo(offertoryBox.position);
+            if (dist < 4.0) {
+                isCoinInserted = true;
+                document.getElementById('interaction-prompt').classList.add('hidden');
+
+                // 1. 賽銭の音
+                audio.playCoinSound();
+
+                // 2. ホラー演出の段階的トリガー
+                document.getElementById('objective-text').innerHTML = "<span class='text-red-500 font-bold'>【警報】引き返せ！鳥居へ逃げろ！</span>";
+                
+                setTimeout(() => {
+                    // 狂気の鈴音 ＆ 異変
+                    audio.playShrineBellJumpscare();
+                    audio.startHorrorAmbience();
+
+                    // 画面の赤フラッシュ演出
+                    document.getElementById('vignette-overlay').classList.add('horror-flash');
+
+                    // 影の怪物出現
+                    spawnShadowMonster();
+
+                    // 灯籠が不気味な赤い明滅に変わる
+                    lanterns.forEach(l => {
+                        l.light.color.setHex(0xff0000);
+                        l.frameMesh.material.emissive.setHex(0xff0000);
+                    });
+                }, 1200);
+            }
+        }
+
+        // --- フレーム更新ループ ---
+        let footstepTimer = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            if (isStarted && !isGameOver && !isEscaped) {
+                // 1. 視点・回転の計算
+                camera.rotation.order = 'YXZ';
+                camera.rotation.y = yaw;
+                camera.rotation.x = pitch;
+
+                // 懐中電灯をカメラ追従
+                flashLight.position.copy(camera.position);
+                const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+                flashLight.target.position.copy(camera.position).add(dir.multiplyScalar(10));
+
+                // 2. 移動の計算
+                moveVector.set(0, 0, 0);
+                const speed = keys.shift ? 0.11 : 0.055;
+
+                if (keys.w) moveVector.z -= 1;
+                if (keys.s) moveVector.z += 1;
+                if (keys.a) moveVector.x -= 1;
+                if (keys.d) moveVector.x += 1;
+
+                moveVector.normalize();
+                moveVector.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+                
+                camera.position.addScaledVector(moveVector, speed);
+
+                // 移動限界・見えない壁 (境界判定)
+                camera.position.x = Math.max(-15, Math.min(15, camera.position.x));
+                camera.position.z = Math.max(-30, Math.min(32, camera.position.z));
+                camera.position.y = 1.65; // 高さ固定
+
+                // 足音再生
+                if (moveVector.lengthSq() > 0) {
+                    footstepTimer += delta;
+                    const stepInterval = keys.shift ? 0.3 : 0.5;
+                    if (footstepTimer >= stepInterval) {
+                        audio.playFootstep(keys.shift);
+                        footstepTimer = 0;
+                    }
+                }
+
+                // 3. 賽銭箱へのアプローチUI
+                if (!isCoinInserted) {
+                    const distToBox = camera.position.distanceTo(offertoryBox.position);
+                    const promptEl = document.getElementById('interaction-prompt');
+                    const crosshair = document.getElementById('crosshair');
+                    if (distToBox < 4.0) {
+                        promptEl.classList.remove('hidden');
+                        crosshair.classList.add('active');
+                    } else {
+                        promptEl.classList.add('hidden');
+                        crosshair.classList.remove('active');
+                    }
+                }
+
+                // 4. 灯籠の揺らぎアニメーション
+                lanterns.forEach((l) => {
+                    if (!isCoinInserted) {
+                        // 通常：優しい炎の揺らぎ
+                        l.light.intensity = l.baseIntensity + Math.sin(time * 6 + l.phaseOffset) * 0.4 + (Math.random() * 0.15);
+                    } else {
+                        // 異変後：激しい狂気の赤点滅
+                        l.light.intensity = Math.random() > 0.3 ? (Math.random() * 3.5) : 0.2;
+                    }
+                });
+
+                // 5. 影の怪物の追跡AI ＆ 判定
+                if (shadowMonster && isCoinInserted) {
+                    // プレイヤーへ向かって徐々に接近
+                    const monsterPos = shadowMonster.position;
+                    const playerPos = camera.position;
+
+                    const dirToPlayer = new THREE.Vector3().subVectors(playerPos, monsterPos).normalize();
+                    monsterPos.addScaledVector(dirToPlayer, monsterSpeed);
+                    shadowMonster.lookAt(playerPos.x, shadowMonster.position.y, playerPos.z);
+
+                    // 距離判定（捕獲＝ゲームオーバー）
+                    const distToMonster = monsterPos.distanceTo(playerPos);
+                    if (distToMonster < 1.6) {
+                        triggerGameOver(false);
+                    }
+                }
+
+                // 6. 脱出勝利判定（鳥居の外 z > 26 に到達）
+                if (isCoinInserted && camera.position.z > 26) {
+                    triggerGameOver(true);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // ゲームオーバーまたはクリア画面
+        function triggerGameOver(isWin) {
+            if (isGameOver || isEscaped) return;
+
+            document.exitPointerLock();
+            const screen = document.getElementById('game-over-screen');
+            const title = document.getElementById('game-over-title');
+            const desc = document.getElementById('game-over-desc');
+
+            screen.classList.remove('hidden');
+            setTimeout(() => screen.style.opacity = '1', 50);
+
+            if (isWin) {
+                isEscaped = true;
+                title.innerText = "生還";
+                title.className = "text-4xl sm:text-6xl text-amber-400 font-bold mb-4 tracking-widest";
+                desc.innerText = "あなたは鳥居をくぐり抜け、無事夜の神社から逃げ延びた。";
+            } else {
+                isGameOver = true;
+                title.innerText = "捕縛";
+                title.className = "text-4xl sm:text-6xl text-red-700 font-bold mb-4 tracking-widest";
+                desc.innerText = "背後に冷たい気配を感じた瞬間、あなたの意識は闇へと消えた……。";
+            }
+        }
+
+        // リサイズ対応
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // 起動
+        window.onload = initThree;
+    </script>
+</body>
+</html>
